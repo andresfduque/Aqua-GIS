@@ -1,0 +1,10 @@
+# ignore all
+*.pyc
+*.ipynb_checkpoints
+*.pytest_cache
+*.ipynb
+*.ropeproject
+*.mypy_cache
+/.vscode/launch.json
+/.vscode/settings.json
+/data/grass-database

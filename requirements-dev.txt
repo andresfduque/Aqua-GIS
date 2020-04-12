@@ -1,0 +1,6 @@
+pycodestyle
+pymysql
+pytest
+pytest-cov
+sphinx
+ipython
