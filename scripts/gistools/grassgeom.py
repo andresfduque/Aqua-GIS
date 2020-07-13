@@ -212,24 +212,14 @@ def f_bsn_morphometry(raster_names_df, vector_names_df, fields_names_df, out_dir
 
     Parameters
     ----------
-    points_v : [type]
-        [description]
-    point_id_field : [type]
-        [description]
-    bsn_name_field : [type]
-        [description]
-    sub_bsn_name_field : [type]
-        [description]
-    raster_names_df : [type]
-        [description]
-    vector_names_df : [type]
-        [description]
-    out_dir : [type]
-        [description]
-    analysis_type : str, optional
-        [description], by default 'Full'
-    deleted_maps : bool, optional
-        [description], by default True
+    raster_names_df: pandas.DataFrame
+        Dataframe containing raster map names in framework
+    vector_names_df: pandas.DataFrame
+        Dataframe containing vector map names in framework
+    fields_names_df: pandas.DataFrame
+        Dataframe containing features field names in framework
+    out_dir: str
+        Output folder to store reported data
 
     Returns
     -------
@@ -250,36 +240,24 @@ def f_bsn_morphometry(raster_names_df, vector_names_df, fields_names_df, out_dir
     else:
         coords_system = 'proj'
 
-    # check if destination folder exists, if not, create it
-    if not os.path.isdir(out_dir):
-        folder = out_dir.split('/')
-        parent_folder = "/".join(folder[:-2])
-        basin_folder = "/".join(folder[:-1])
-        if os.path.isdir(parent_folder):
-            if not os.path.isdir(basin_folder):
-                os.mkdir(basin_folder)
-                os.mkdir(out_dir)
-        else:
-            print('!Can not create folder in the specified location!')
-
     # global raster variables
-    r_slope = raster_names_df['slope_r']
-    r_strahler = raster_names_df['strahler_network_r']
-    r_elevation_global = raster_names_df['dem_original_r']
-    r_drainage_global = raster_names_df['flow_direction_r']
-    r_stream_network = raster_names_df['stream_network_thinned_r']
-    r_accumulation_global = raster_names_df['flow_accumulation_r']
-    r_downstream_distance_global = raster_names_df['downstream_distance_r']
+    r_slope = raster_names_df['Code']['slope_original_r']
+    r_strahler = raster_names_df['Code']['strahler_network_r']
+    r_elevation_global = raster_names_df['Code']['dem_original_r']
+    r_drainage_global = raster_names_df['Code']['flow_direction_r']
+    r_stream_network = raster_names_df['Code']['stream_network_thinned_r']
+    r_accumulation_global = raster_names_df['Code']['flow_accumulation_r']
+    r_downstream_distance_global = raster_names_df['Code']['downstream_distance_r']
 
     # global vector variables
     v_outlet_snap = 'outlet_snap'
-    v_stream_network = vector_names_df['stream_network_v']
-    v_hydrologic_points = vector_names_df['analysis_points_v']
+    v_stream_network = vector_names_df['Code']['stream_network_v']
+    v_hydrologic_points = vector_names_df['Code']['analysis_points_v']
 
     # global vector fields
-    point_id_field = fields_names_df['bsn_id']
-    bsn_name_field = fields_names_df['bsn_name']
-    sub_bsn_name_field = fields_names_df['sub_bsn_name']
+    point_id_field = fields_names_df['Code']['bsn_id']
+    bsn_name_field = fields_names_df['Code']['bsn_name']
+    sub_bsn_name_field = fields_names_df['Code']['sub_bsn_name']
 
     # save current region
     grass.read_command('g.region', flags='p', save='original', overwrite=True)
@@ -361,13 +339,21 @@ def f_bsn_morphometry(raster_names_df, vector_names_df, fields_names_df, out_dir
     # ==================================================================================================================
     # -- Morphometric characterization of each point [loop]
     # ==================================================================================================================
-    for i in enumerate(analysis_points_df):
+    for i, _ in enumerate(analysis_points_df.index.values):
         basin_processing_time = time()
 
         # id, name
         bsn_id = bsn_id_list[i]
         bsn_name = bsn_name_list[i]
         sub_bsn_name = sub_bsn_name_list[i]
+
+        # create basin and sub basin folders if they don't exist
+        bsn_folder = out_dir + '/{}'.format(bsn_name)
+        sub_bsn_folder = bsn_folder + '/{}'.format(sub_bsn_name)
+        if not os.path.isdir(bsn_folder):
+            os.mkdir(bsn_folder)
+        if not os.path.isdir(sub_bsn_folder):
+            os.mkdir(sub_bsn_folder)
 
         # variable names for each basin analysis
         r_mask = 'r_mask'
@@ -397,17 +383,16 @@ def f_bsn_morphometry(raster_names_df, vector_names_df, fields_names_df, out_dir
         # ==============================================================================================================
         try:
             # extract analysis point
-            point_id = bsn_id[i]
-            grass.run_command('v.extract', input=v_hydrologic_points, output='Pour_Point%s' % point_id,
-                              type='point', where='cat=%s' % point_id, overwrite=True, quiet=True)
-            grass.run_command('v.to.rast', input='Pour_Point%s' % point_id, output='Pour_Point%s' % point_id,
+            grass.run_command('v.extract', input=v_hydrologic_points, output='Pour_Point%s' % bsn_id,
+                              type='point', where='cat=%s' % bsn_id, overwrite=True, quiet=True)
+            grass.run_command('v.to.rast', input='Pour_Point%s' % bsn_id, output='Pour_Point%s' % bsn_id,
                               use='cat', type='point', overwrite=True, quiet=True)
-            pour_point_coordinates = grass.read_command('v.info', map='Pour_Point%s' % point_id, flags='g')
+            pour_point_coordinates = grass.read_command('v.info', map='Pour_Point%s' % bsn_id, flags='g')
             pour_point_coordinates = dict(x.split('=', 1) for x in pour_point_coordinates.split('\n') if '=' in x)
 
             # delineate basin
             grass.run_command('r.stream.basins', direction=r_drainage_global, basins=r_bsn,
-                              points='Pour_Point%s' % point_id, overwrite=True, quiet=True)
+                              points='Pour_Point%s' % bsn_id, overwrite=True, quiet=True)
 
             print('!Delineation of %s basin DONE!' % sub_bsn_name)
         except TypeError:
@@ -517,7 +502,7 @@ def f_bsn_morphometry(raster_names_df, vector_names_df, fields_names_df, out_dir
             try:
                 # distance to outlet
                 start_time = time()
-                grass.run_command('r.stream.distance', stream_rast='Pour_Point%s' % point_id, overwrite=True,
+                grass.run_command('r.stream.distance', stream_rast='Pour_Point%s' % bsn_id, overwrite=True,
                                   direction=r_basin_drainage, flags='o', distance=r_basin_distance, quiet=True)
                 print('!Downstream Distance to Outlet of %s basin CALCULATED!' % sub_bsn_name)
                 print('Processing time = %.2f minutes' % ((time() - start_time)/60))
@@ -866,7 +851,7 @@ def f_bsn_morphometry(raster_names_df, vector_names_df, fields_names_df, out_dir
     # ==================================================================================================================
     # -- Export morphometric parameters data frame
     # ==================================================================================================================
-    parameters_df.to_csv(out_dir + '/' + bsn_name + '/' + sub_bsn_name + '/' + 'Morphometric Characterization.csv')
+    parameters_df.to_csv(out_dir + '/' + 'Morphometric Characterization.csv')
     print('BASIN %s PROCESSING TIME = %.2f minutes' % (sub_bsn_name, (time() - basin_processing_time)/60))
     grass.run_command('g.remove', flags='f', type='region', name='original')
     print('BASIN MORPHOMETRIC CHARACTERIZATION ENDED')
@@ -1636,27 +1621,17 @@ def r_watershed(dem_raster, threshold=500, flow_direction=None, flow_accumulatio
     print('!Terrain Hydrological Processing DONE [r.watershed]!')
 
 
-def r_bsn_preprocess(dem_original_r, hydro_corrected_dem_r, flow_direction_r, flow_accumulation_r, stream_network_r,
-                     out_raster_names_df, out_vector_names_df):
+def r_bsn_preprocess(raster_names_df, vector_names_df):
     """
     Preprocess if r.basin is going to be applied to the hole study area [recommended].
 
     Parameters
     ----------
-    dem_original_r: str
-        Hydrological corrected DEM used to create flow accumulation, flow direction, and streams network maps
-    hydro_corrected_dem_r: str
-        Hydrological corrected DEM used to create flow accumulation, flow direction, and streams network maps
-    raster_names_df: object
-        Dataframe [pandas] containing predefined raster map names
-    vector_names_df: object
-        Dataframe [pandas] containing predefined raster map names
-    flow_direction_r: str
-        Flow directions map
-    flow_accumulation_r: str
-        Flow accumulation map
-    stream_network_r: str
-        Stream network map
+    raster_names_df: pandas.DataFrame
+        Dataframe containing all framework raster map names
+    vector_names_df: pandas.DataFrame
+        Dataframe containing all framework vector map names
+
     Returns
     -------
     Slope map
@@ -1673,27 +1648,29 @@ def r_bsn_preprocess(dem_original_r, hydro_corrected_dem_r, flow_direction_r, fl
     # -- Set raster maps and vector names
     # ==================================================================================================================
     # global variables
-    r_drainage_global = flow_direction_r
-    r_elevation_global = hydro_corrected_dem_r
-    r_stream_network_global = stream_network_r
-    r_accumulation_global = flow_accumulation_r
-    r_original_elevation_global = dem_original_r
+    r_drainage_global = raster_names_df['Code']['flow_direction_r']
+    r_elevation_global = raster_names_df['Code']['dem_hydro_corrected_r']
+    r_stream_network_global = raster_names_df['Code']['stream_network_r']
+    r_flow_direction_global = raster_names_df['Code']['flow_direction_r']
+    r_stream_network_global = raster_names_df['Code']['stream_network_r']
+    r_accumulation_global = raster_names_df['Code']['flow_accumulation_r']
+    r_original_elevation_global = raster_names_df['Code']['dem_original_r']
 
     # result maps
-    r_hack_global = out_raster_names_df['Code']['hack_network_r']
-    r_slope_global = out_raster_names_df['Code']['slope_original_r']
-    r_shreve_global = out_raster_names_df['Code']['shreve_network_r']
-    r_horton_global = out_raster_names_df['Code']['horton_network_r']
-    r_aspect_global = out_raster_names_df['Code']['aspect_original_r']
-    r_strahler_global = out_raster_names_df['Code']['strahler_network_r']
-    r_hillslope_distance = out_raster_names_df['Code']['hillslope_dist_r']
-    r_stream_network_outlets_global = out_raster_names_df['Code']['outlets_r']
-    r_downstream_distance_global = out_raster_names_df['Code']['downstream_distance_r']
-    r_stream_network_thin_global = out_raster_names_df['Code']['stream_network_thinned_r']
+    r_hack_global = raster_names_df['Code']['hack_network_r']
+    r_slope_global = raster_names_df['Code']['slope_original_r']
+    r_shreve_global = raster_names_df['Code']['shreve_network_r']
+    r_horton_global = raster_names_df['Code']['horton_network_r']
+    r_aspect_global = raster_names_df['Code']['aspect_original_r']
+    r_strahler_global = raster_names_df['Code']['strahler_network_r']
+    r_hillslope_distance = raster_names_df['Code']['hillslope_dist_r']
+    r_stream_network_outlets_global = raster_names_df['Code']['outlet_points_r']
+    r_downstream_distance_global = raster_names_df['Code']['downstream_distance_r']
+    r_stream_network_thin_global = raster_names_df['Code']['stream_network_thinned_r']
 
     # result vectors
-    v_stream_network_outlets_global = out_vector_names_df['Code']['outlet_points']
-    v_stream_network_global = out_vector_names_df['Code']['stream_network_polyline']
+    v_stream_network_outlets_global = vector_names_df['Code']['outlet_points_v']
+    v_stream_network_global = vector_names_df['Code']['stream_network_v']
 
     # ==================================================================================================================
     # -- Terrain analysis
@@ -1756,10 +1733,10 @@ def r_bsn_preprocess(dem_original_r, hydro_corrected_dem_r, flow_direction_r, fl
         start_time = time()
         # read maps
         stream_rast = garray.array()
-        stream_rast.read(stream_network_r)
+        stream_rast.read(r_stream_network_global)
 
         direction_rast = garray.array()
-        direction_rast.read(flow_direction_r)
+        direction_rast.read(r_flow_direction_global)
 
         n_rows = np.shape(stream_rast)[0]
         n_cols = np.shape(stream_rast)[1]
@@ -1787,8 +1764,9 @@ def r_bsn_preprocess(dem_original_r, hydro_corrected_dem_r, flow_direction_r, fl
         # -- Downstream distance
         # ==============================================================================================================
         start_time = time()
-        grass.run_command('r.stream.distance', stream_rast=r_stream_network_outlets_global, direction=flow_direction_r,
-                          method='downstream', distance=r_downstream_distance_global, overwrite=True)
+        grass.run_command('r.stream.distance', stream_rast=r_stream_network_outlets_global,
+                          direction=r_flow_direction_global, method='downstream',
+                          distance=r_downstream_distance_global, overwrite=True)
         print('!Downstream distance CALCULATED! - Process time = %.2f minutes' % ((time() - start_time) / 60))
 
         print('!MORPHOMETRIC PRE-PROCESSING TIME = %.2f minutes' % ((time() - overall_start_time) / 60))

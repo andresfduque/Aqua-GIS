@@ -80,11 +80,11 @@ def time_concentration(analysis_points, max_hydrology_file, iqr_interval=1.0, am
     mm_ft_miles = 5280
 
     # excluded points from analysis
-    if exclusion_file:
-        exclusion_list = pd.read_excel(exclusion_file, header=0)['cat']
-        cols = ['stream_' + str(int(i)) for i in points_df['value'].values if i not in exclusion_list.values]
-    else:
-        cols = ['stream_' + str(int(i)) for i in points_df['value'].values]
+    # if exclusion_file:
+    #     exclusion_list = pd.read_excel(exclusion_file, header=0)['cat']
+    #     cols = ['stream_' + str(int(i)) for i in points_df['value'].values if i not in exclusion_list.values]
+    # else:
+    #     cols = ['stream_' + str(int(i)) for i in points_df['value'].values]
 
     # dataframe to store times of concentration
     concentration_time_df = pd.DataFrame(data=None, index=['Bransby-Williams', 'California Culverts Practice',
@@ -94,7 +94,7 @@ def time_concentration(analysis_points, max_hydrology_file, iqr_interval=1.0, am
                                                            'Ventura', 'Dooge', 'Corps Engineers', 'Carter', 'Picking',
                                                            'Mean', 'Median', 'Standard Deviation', 'IQR',
                                                            'Interval Amplitude', 'Upper Limit', 'Lower Limit',
-                                                           'Selected'], columns=cols)
+                                                           'Selected'], columns=points_df['SUB_BASIN'].values)
 
     # ==================================================================================================================
     # -- Get morphometric parameters of each basin and calculate times of concentration

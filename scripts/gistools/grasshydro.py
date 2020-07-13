@@ -87,14 +87,14 @@ def r_curve_number_estimation(cover_shapefile, clc_field_name, soil_field_name, 
     # check if all shapefile covers and soil types are related to a CN in the lookup file
     cover_matches = False
     soil_matches = False
-    for i in enumerate(land_cover_shp_codes):
-        if land_cover_shp_codes[i] not in land_cover_references:
+    for i, land_cover_code in enumerate(land_cover_shp_codes):
+        if land_cover_code not in land_cover_references:
             cover_matches = True
-            print("!%s soil wasn't found in cover type reference file!" % land_cover_shp_codes[i])
-    for j in enumerate(soil_types_shp_codes):
-        if soil_types_shp_codes[j] not in soil_type_references:
+            print("!%s cover wasn't found in cover type reference file!" % land_cover_code)
+    for j, soil_type_code in enumerate(soil_types_shp_codes):
+        if soil_type_code not in soil_type_references:
             soil_matches = True
-            print("!%s soil wasn't found in cover type reference file!" % soil_types_shp_codes[j])
+            print("!%s soil wasn't found in soil type reference file!" % soil_type_code)
 
     # associate CN to specific land cover and soil type
     try:
@@ -170,7 +170,7 @@ def r_regional_integration():
     """TODO: curve number by sub-basins."""
 
 
-def v_extract_value(points_v, input_r, exclusion_list=None):
+def v_extract_value(points_v, input_r, max_hydrology_file, out_sheetname='2. Runoff Coefficient',exclusion_file=None):
     """Extract raster value for each analysis point.
 
     TODO:Generalize r.what
@@ -197,17 +197,18 @@ def v_extract_value(points_v, input_r, exclusion_list=None):
     analysis_points_df = pd.read_sql_query(sql_stat, con, index_col='cat')
 
     # excluded points from analysis
-    if exclusion_list:
-        exclusion_list = pd.read_excel(exclusion_file, header=0)['cat']
-        cols = ['stream_' + str(int(i)) for i in analysis_points_df[basin_id_field].values
-                if i not in exclusion_list.values]
-    else:
-        cols = ['stream_' + str(int(i)) for i in analysis_points_df[basin_id_field].values]
+    # if exclusion_list:
+    #     exclusion_list = pd.read_excel(exclusion_file, header=0)['cat']
+    #     cols = ['stream_' + str(int(i)) for i in analysis_points_df[basin_id_field].values
+    #             if i not in exclusion_list.values]
+    # else:
+    #     cols = ['stream_' + str(int(i)) for i in analysis_points_df[basin_id_field].values]
 
     # ==================================================================================================================
     # -- Create dataframe to store values
     # ==================================================================================================================
-    cn_df = pd.DataFrame(data=None, index=['CN_AMCII', 'CN_AMCI', 'CN_AMCIII'], columns=cols)
+    cn_df = pd.DataFrame(data=None, index=['CN_AMCII', 'CN_AMCI', 'CN_AMCIII'],
+                         columns=analysis_points_df['SUB_BASIN'].values)
 
     # ==================================================================================================================
     # -- Read each CN value from map and export to hydrology file
@@ -232,8 +233,8 @@ def v_extract_value(points_v, input_r, exclusion_list=None):
                 cn_df['stream_' + str(int(analysis_points_df['value'][i]))]['CN_AMCIII'] = cn_amc_iii
     else:
         for i in analysis_points_df.index.values:
-            east_coord = analysis_points_df['east'][i]
-            north_coord = analysis_points_df['north'][i]
+            east_coord = analysis_points_df['EAST'][i]
+            north_coord = analysis_points_df['NORTH'][i]
             curve_number = grass.read_command('r.what', map=input_r,
                                               coordinates=[east_coord, north_coord])
             curve_number = round(float(curve_number.split('|')[3]), 0)
@@ -241,9 +242,9 @@ def v_extract_value(points_v, input_r, exclusion_list=None):
             cn_amc_i = round(4.2*curve_number/(10-0.058*curve_number), 0)
             cn_amc_iii = round(23*curve_number/(10+0.13*curve_number), 0)
 
-            cn_df['stream_' + str(int(analysis_points_df['value'][i]))]['CN_AMCII'] = curve_number
-            cn_df['stream_' + str(int(analysis_points_df['value'][i]))]['CN_AMCI'] = cn_amc_i
-            cn_df['stream_' + str(int(analysis_points_df['value'][i]))]['CN_AMCIII'] = cn_amc_iii
+            cn_df[analysis_points_df['SUB_BASIN'][i]]['CN_AMCII'] = curve_number
+            cn_df[analysis_points_df['SUB_BASIN'][i]]['CN_AMCI'] = cn_amc_i
+            cn_df[analysis_points_df['SUB_BASIN'][i]]['CN_AMCIII'] = cn_amc_iii
 
     # save to a new excel sheet
     book = load_workbook(max_hydrology_file)
