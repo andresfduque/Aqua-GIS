@@ -170,7 +170,7 @@ def r_regional_integration():
     """TODO: curve number by sub-basins."""
 
 
-def v_extract_value(points_v, input_r, max_hydrology_file, out_sheetname='2. Runoff Coefficient',exclusion_file=None):
+def v_extract_value(points_v, input_r, max_hydrology_file, out_sheetname='2. Runoff Coefficient', exclusion_file=None):
     """Extract raster value for each analysis point.
 
     TODO:Generalize r.what
