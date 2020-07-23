@@ -2,7 +2,6 @@
 *.pyc
 *.ipynb_checkpoints
 *.pytest_cache
-*.ipynb
 *.ropeproject
 *.mypy_cache
 /.vscode/launch.json
