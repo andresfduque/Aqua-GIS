@@ -207,7 +207,7 @@ def f_geodesic_bearing(lat1, lat2, lon1, lon2):
 
 
 def f_bsn_morphometry(raster_names_df, vector_names_df, fields_names_df, out_dir, analysis_type='Full',
-                      deleted_maps=True):
+                      delete_maps=True):
     """Morphometric analysis of the hydrologic basin, defined by closing point.
 
     Parameters
@@ -384,7 +384,7 @@ def f_bsn_morphometry(raster_names_df, vector_names_df, fields_names_df, out_dir
         try:
             # extract analysis point
             grass.run_command('v.extract', input=v_hydrologic_points, output='Pour_Point%s' % bsn_id,
-                              type='point', where='cat=%s' % bsn_id, overwrite=True, quiet=True)
+                              type='point', where='BASIN_ID=%s' % bsn_id, overwrite=True, quiet=True)
             grass.run_command('v.to.rast', input='Pour_Point%s' % bsn_id, output='Pour_Point%s' % bsn_id,
                               use='cat', type='point', overwrite=True, quiet=True)
             pour_point_coordinates = grass.read_command('v.info', map='Pour_Point%s' % bsn_id, flags='g')
@@ -830,14 +830,15 @@ def f_bsn_morphometry(raster_names_df, vector_names_df, fields_names_df, out_dir
                 # ======================================================================================================
                 # -- Delete maps if flagged
                 # ======================================================================================================
-                if deleted_maps:
-                    deleted_maps = [r_mask, r_basin_slope, r_basin_stream, r_basin_strahler, r_basin_drainage,
-                                    r_basin_distance, r_basin_elevation, r_basin_half_basin, r_basin_accumulation,
-                                    r_basin_slope_average, r_basin_height_average, r_basin_hillslope_distance]
-                    grass.run_command('g.remove', type='raster', name=deleted_maps, flags='f')
+                if delete_maps:
+                    delete_maps = [r_mask, r_basin_slope, r_basin_stream, r_basin_strahler, r_basin_drainage,
+                                   r_basin_distance, r_basin_elevation, r_basin_half_basin, r_basin_accumulation,
+                                   r_basin_slope_average, r_basin_height_average, r_basin_hillslope_distance]
+                    grass.run_command('g.remove', type='raster', name=delete_maps, flags='f')
 
                     deleted_vectors = [v_half_basin, v_mainchannel, v_centroid, v_mainchannel_split,
                                        v_basin_stream_network]
+                    print(deleted_vectors)
                     grass.run_command('g.remove', type='vector', name=deleted_vectors, flags='f')
 
             except TypeError:
@@ -1323,6 +1324,652 @@ def f_bsn_simple_morphometry(input_dem, analysis_points, analysis_points_field, 
     print('BASIN MORPHOMETRIC CHARACTERIZATION ENDED')
 
 
+def f_bsn_urban_morphometry(raster_names_df, vector_names_df, fields_names_df, out_dir, delete_maps=True):
+    """Morphometric analysis of the hydrologic urban basin, defined manually.
+
+    Parameters
+    ----------
+    raster_names_df: pandas.DataFrame
+        Dataframe containing raster map names in framework
+    vector_names_df: pandas.DataFrame
+        Dataframe containing vector map names in framework
+    fields_names_df: pandas.DataFrame
+        Dataframe containing features field names in framework
+    out_dir: str
+        Output folder to store reported data
+
+    Returns
+    -------
+    morphometric_df: pandas.DataFrame
+        Morphometric characterization for each basin.
+
+    """
+    # ==================================================================================================================
+    # -- Main imports and preparations
+    # ==================================================================================================================
+    print('START BASIN MORPHOMETRIC CHARACTERIZATION')
+    # check dependencies
+    check_r_bsn_requisites()
+
+    # define location type
+    if grass.locn_is_latlong():
+        coords_system = 'geo'
+    else:
+        coords_system = 'proj'
+
+    # global raster variables
+    r_slope = raster_names_df['Code']['slope_original_r']
+    r_strahler = raster_names_df['Code']['strahler_network_r']
+    r_elevation_global = raster_names_df['Code']['dem_original_r']
+    r_drainage_global = raster_names_df['Code']['flow_direction_r']
+    r_stream_network = raster_names_df['Code']['stream_network_thinned_r']
+    r_accumulation_global = raster_names_df['Code']['flow_accumulation_r']
+    r_downstream_distance_global = raster_names_df['Code']['downstream_distance_r']
+
+    # global vector variables
+    v_outlet_snap = 'outlet_snap'
+    v_stream_network = vector_names_df['Code']['stream_network_v']
+    v_hydrologic_points = vector_names_df['Code']['analysis_points_v']
+
+    # global vector fields
+    point_id_field = fields_names_df['Code']['bsn_id']
+    bsn_name_field = fields_names_df['Code']['bsn_name']
+    sub_bsn_name_field = fields_names_df['Code']['sub_bsn_name']
+
+    # save current region
+    grass.read_command('g.region', flags='p', save='original', overwrite=True)
+
+    # ==================================================================================================================
+    # -- Input points preparation
+    # ==================================================================================================================
+    # snap outlet to stream network [hardcoded to four times raster resolution]
+    pixel_res = grass.raster_info(r_elevation_global)['ewres']
+    try:
+        grass.read_command('g.findfile', element='vector', file=v_outlet_snap)
+        grass.run_command('v.db.connect', map=v_outlet_snap, table=v_hydrologic_points, flags='d')
+        grass.run_command('r.stream.snap', input=v_hydrologic_points, output=v_outlet_snap,
+                          stream_rast=r_stream_network, radius=2, overwrite=True, quiet=True)
+        grass.run_command('v.db.connect', map=v_outlet_snap, table=v_hydrologic_points, flags='o')
+    except grass.CalledModuleError:
+        grass.run_command('r.stream.snap', input=v_hydrologic_points, output=v_outlet_snap,
+                          stream_rast=r_stream_network, radius=2, overwrite=True, quiet=True)
+        grass.run_command('v.db.connect', map=v_outlet_snap, table=v_hydrologic_points, flags='o')
+
+    # set conditions for analysis type
+    sql_path = grass.read_command('db.databases', driver='sqlite').replace('\n', '')
+    con = sqlite3.connect(sql_path)
+    sql_stat = 'SELECT * FROM %s ' % v_hydrologic_points
+    analysis_points_df = pd.read_sql_query(sql_stat, con)
+    bsn_id_list = analysis_points_df[point_id_field]
+    bsn_name_list = analysis_points_df[bsn_name_field]
+    sub_bsn_name_list = analysis_points_df[sub_bsn_name_field]
+
+    # ==================================================================================================================
+    # -- Create database to store morphometric parameters estimations
+    # ==================================================================================================================
+    parameter_index = ['1. Easting Centroid of basin',
+                       '2. Northing Centroid of basin',
+                       '3. Rectangle containing basin N',
+                       '4. Rectangle containing basin W',
+                       '5. Rectangle containing basin S',
+                       '6. Rectangle containing basin E',
+                       '7. Basin Area [km^2]',
+                       '8. Basin Perimeter [km]',
+                       '9. Basin Max Length [km]',
+                       '10. Basin Width [km]',
+                       '11. Basin Distance to Center of Gravity [km]',
+                       '12. Basin Max Elevation [masl]',
+                       '13. Basin Min Elevation [masl]',
+                       '14. Basin Elevation Difference [m]',
+                       '15. Basin Mean Elevation [masl]',
+                       '16. Basin Mean Slope [m/m]',
+                       '17. Basin Length of Directing Vector [km]',
+                       '18. Basin Prevalent Orientation [degree from north, counterclockwise]',
+                       '19. Mainchannel Length [km]',
+                       '20. Mainchannel Mean Slope [m/m]',
+                       '21. Mainchannel Mean Slope USGS [m/m]',
+                       '22. Mainchannel Max Elevation [masl]',
+                       '23. Stream Network Mean Hillslope Length [m]',
+                       '24. Stream Network Magnitude O [und]',
+                       '25. Stream Network Max Order [Strahler]',
+                       '26. Stream Network Number of Streams [und]',
+                       '27. Stream Network Total Stream Length [km]',
+                       '28. Stream Network First Order Stream Frequency',
+                       '29. Stream Network Drainage Density [km/km^2]',
+                       '30. Stream Network Stream Frequency [num/km^2]',
+                       '31. Stream Network Bifurcation Ratio [Horton]',
+                       '32. Stream Network Length Ratio [Horton]',
+                       '33. Stream Network Area ratio [Horton]',
+                       '34. Stream Network Slope ratio [Horton]',
+                       '35. Index Compactness Coefficient',
+                       '36. Index Circularity Ratio',
+                       '37. Index Topological Diameter',
+                       '38. Index Elongation Ratio',
+                       '39. Index Shape Factor',
+                       '40. Index Massiveness coefficient',
+                       '41. Index Orographic coefficient',
+                       '42. Index Stability coefficient',
+                       '43. Index Asymmetry']
+
+    parameters_df = pd.DataFrame(data=None, index=parameter_index)
+
+    # ==================================================================================================================
+    # -- Morphometric characterization of each point [loop]
+    # ==================================================================================================================
+    for i, _ in enumerate(analysis_points_df.index.values):
+        basin_processing_time = time()
+
+        # id, name
+        bsn_id = bsn_id_list[i]
+        bsn_name = bsn_name_list[i]
+        sub_bsn_name = sub_bsn_name_list[i]
+
+        # create basin and sub basin folders if they don't exist
+        bsn_folder = out_dir + '/{}'.format(bsn_name)
+        sub_bsn_folder = bsn_folder + '/{}'.format(sub_bsn_name)
+        if not os.path.isdir(bsn_folder):
+            os.mkdir(bsn_folder)
+        if not os.path.isdir(sub_bsn_folder):
+            os.mkdir(sub_bsn_folder)
+
+        # variable names for each basin analysis
+        r_mask = 'r_mask'
+        r_bsn = sub_bsn_name + '_basin'
+        r_basin_slope = sub_bsn_name + '_slope'
+        r_basin_stream = sub_bsn_name + '_stream'
+        r_basin_strahler = sub_bsn_name + '_strahler'
+        r_basin_drainage = sub_bsn_name + '_drainage'
+        r_basin_distance = sub_bsn_name + '_dist2out'
+        r_basin_elevation = sub_bsn_name + '_elevation'
+        r_basin_half_basin = sub_bsn_name + '_half_basin'
+        r_basin_accumulation = sub_bsn_name + '_accumulation'
+        r_basin_slope_average = sub_bsn_name + '_slope_average'
+        r_basin_height_average = sub_bsn_name + '_height_average'
+        r_downstream_distance = sub_bsn_name + '_downstream_distance'
+        r_basin_hillslope_distance = sub_bsn_name + '_hillslope_distance'
+
+        v_basin = sub_bsn_name + '_basin'
+        v_half_basin = sub_bsn_name + '_half_basin'
+        v_mainchannel = sub_bsn_name + '_mainchannel'
+        v_centroid = sub_bsn_name + '_centroid'
+        v_mainchannel_split = sub_bsn_name + '_mainchannel_split'
+        v_basin_stream_network = sub_bsn_name + '_stream_network'
+
+        # ==============================================================================================================
+        # -- Basin Rasterization
+        # ==============================================================================================================
+        try:
+            # rasterize polygon basin
+            grass.run_command('v.to.rast', input=v_basin, output=r_bsn, type='area', use='cat', overwrite=True)
+
+            # rasterize pour points
+            grass.run_command('v.extract', input=v_hydrologic_points, output='Pour_Point%s' % bsn_id,
+                              type='point', where='BASIN_ID=%s' % bsn_id, overwrite=True, quiet=True)
+            grass.run_command('v.to.rast', input='Pour_Point%s' % bsn_id, output='Pour_Point%s' % bsn_id,
+                              use='cat', type='point', overwrite=True, quiet=True)
+            pour_point_coordinates = grass.read_command('v.info', map='Pour_Point%s' % bsn_id, flags='g')
+            pour_point_coordinates = dict(x.split('=', 1) for x in pour_point_coordinates.split('\n') if '=' in x)
+
+            print('!Rasterization of %s basin DONE!' % sub_bsn_name)
+        except TypeError:
+            print('!Rasterization of %s basin FAILED!' % sub_bsn_name)
+
+        # ==============================================================================================================
+        # -- Basin Vectorization
+        # ==============================================================================================================
+        try:
+            grass.run_command('r.to.vect', input=r_bsn, output=v_basin, type='area', flags='sv', overwrite=True,
+                              quiet=True)
+
+            # add two columns to the table: area and perimeter
+            grass.run_command('v.db.addcolumn', map=v_basin, columns='area double precision', quiet=True)
+            grass.run_command('v.db.addcolumn', map=v_basin, columns='perimeter double precision', quiet=True)
+
+            # populate perimeter column
+            grass.run_command('v.to.db', map=v_basin, option='perimeter', units='kilometers', columns='perimeter',
+                              quiet=True)
+            # read perimeter
+            tmp = grass.read_command('v.to.db', map=v_basin, option='perimeter', units='kilometers',
+                                     columns='perimeter', flags='p')
+            perimeter_basin = float(tmp.split('\n')[1].split('|')[1])
+
+            # populate area column
+            grass.run_command('v.to.db', map=v_basin, option='area', columns='area', units='kilometers', quiet=True)
+
+            # read area
+            tmp = grass.read_command('v.to.db', map=v_basin, option='area', units='kilometers', columns='area',
+                                     flags='p')
+            area_basin = float(tmp.split('\n')[1].split('|')[1])
+
+            print('!Vectorization of %s basin DONE!' % sub_bsn_name)
+        except TypeError:
+            print('!Vectorization of %s basin FAILED!' % sub_bsn_name)
+
+        # ==============================================================================================================
+        # -- Mask and Cropping
+        # ==============================================================================================================
+        try:
+            grass.run_command('r.mask', raster=r_bsn)
+
+            # add mask
+            expr = '%s = %s / %s' % (r_mask, r_bsn, r_bsn)
+            grass.run_command('r.mapcalc', expression=expr, overwrite=True)
+
+            # crop accumulation map
+            expr = '%s = %s' % (r_basin_accumulation, r_accumulation_global)
+            grass.run_command('r.mapcalc', expression=expr, overwrite=True)
+
+            # crop elevation map
+            expr = '%s = %s' % (r_basin_elevation, r_elevation_global)
+            grass.run_command('r.mapcalc', expression=expr, overwrite=True)
+
+            # crop flow directions map
+            expr = '%s = %s' % (r_basin_drainage, r_drainage_global)
+            grass.run_command('r.mapcalc', expression=expr, overwrite=True)
+
+            # crop stream network map
+            expr = '%s = %s' % (r_basin_stream, r_stream_network)
+            grass.run_command('r.mapcalc', expression=expr, overwrite=True)
+
+            # crop slope map
+            expr = '%s = %s' % (r_basin_slope, r_slope)
+            grass.run_command('r.mapcalc', expression=expr, overwrite=True)
+
+            # crop stream network strahler map
+            expr = '%s = %s' % (r_basin_strahler, r_strahler)
+            grass.run_command('r.mapcalc', expression=expr, overwrite=True)
+
+            # crop stream network strahler vector
+            grass.run_command('v.overlay', ainput=v_stream_network, binput=v_basin, operator='and', atype='line',
+                              output=v_basin_stream_network, olayer='0,1,0', overwrite=True, quiet=True)
+
+            # crop downstream distance and adjust
+            expr = '%s = %s' % (r_downstream_distance, r_downstream_distance_global)
+            grass.run_command('r.mapcalc', expression=expr, overwrite=True)
+            global_downstream_distance = grass.raster_info(r_downstream_distance)['min']
+
+            expr = '%s = %s - %0.4f' % (r_downstream_distance, r_downstream_distance, global_downstream_distance)
+            grass.run_command('r.mapcalc', expression=expr, overwrite=True)
+
+            # half basin
+            max_accumulation = grass.raster_info(r_basin_accumulation)['max']
+            grass.run_command('r.watershed', elevation=r_basin_elevation, threshold=int(max_accumulation * 0.9),
+                              half_basin=r_basin_half_basin, flags='s', overwrite=True, quiet=True)
+            grass.run_command('r.to.vect', input=r_basin_half_basin, output=v_half_basin, type='area', flags='sv',
+                              overwrite=True, quiet=True)
+            grass.run_command('v.db.addcolumn', map=v_half_basin, columns='area double precision', quiet=True)
+            grass.run_command('v.to.db', map=v_half_basin, option='area', columns='area', units='kilometers',
+                              quiet=True)
+
+            sql_stat2 = 'SELECT * FROM %s ' % v_half_basin
+            half_basin_df = pd.read_sql_query(sql_stat2, con)
+            asymmetry_coefficient = half_basin_df['area'].max() / half_basin_df['area'].min()
+
+            print('!Making and Cropping of %s basin DONE!' % sub_bsn_name)
+        except TypeError:
+            print('!Making and Cropping of %s basin FAILED!' % sub_bsn_name)
+        # remove mask
+        grass.run_command('r.mask', flags='r')
+
+        # ==========================================================================================================
+        # -- Morphometric characterization
+        # ==========================================================================================================
+        try:
+            # distance to outlet
+            start_time = time()
+            grass.run_command('r.stream.distance', stream_rast='Pour_Point%s' % bsn_id, overwrite=True,
+                              direction=r_basin_drainage, flags='o', distance=r_basin_distance, quiet=True)
+            print('!Downstream Distance to Outlet of %s basin CALCULATED!' % sub_bsn_name)
+            print('Processing time = %.2f minutes' % ((time() - start_time)/60))
+
+            start_time = time()
+            # hill-slope distance to river network
+            grass.run_command("r.stream.distance", stream_rast=r_basin_stream, direction=r_basin_drainage,
+                              elevation=r_basin_elevation, distance=r_basin_hillslope_distance, overwrite=True,
+                              quiet=True)
+            print('!Hillslope Distance to River Network of %s basin CALCULATED!' % sub_bsn_name)
+            print('Processing time = %.2f minutes' % ((time() - start_time)/60))
+
+            # mean elevation
+            grass.run_command("r.stats.zonal", base=r_bsn, cover=r_basin_elevation, method="average",
+                              output=r_basin_height_average, quiet=True)
+            mean_elev = grass.raster_info(r_basin_height_average)['min']
+            grass.run_command('g.remove', type='raster', name=r_basin_height_average, flags='f')
+            print('!Mean Elevation of %s basin CALCULATED [%s msnm]!' % (sub_bsn_name, mean_elev))
+
+            # mean slope
+            grass.run_command("r.stats.zonal", base=r_bsn, cover=r_basin_slope, method="average",
+                              output=r_basin_slope_average)
+            mean_slope = grass.raster_info(r_basin_slope_average)['min']
+            mean_slope = mean_slope / 100   # m/m
+            grass.run_command('g.remove', type='raster', name=r_basin_slope_average, flags='f')
+            print('!Mean Slope of %s basin CALCULATED [%.2f m/m]!' % (sub_bsn_name, mean_slope))
+
+            # centroid and mean slope
+            baricenter_slope = grass.read_command("r.volume", input=r_slope, clump=r_bsn)
+            baricenter_slope = baricenter_slope.split()
+            # mean_slope = float(baricenter_slope[30].decode())
+            basin_centroid_east = float(baricenter_slope[33])
+            basin_centroid_north = float(baricenter_slope[34])
+            print('!Centroid of %s basin CALCULATED [%.2fE, %.2fN]!' % (sub_bsn_name, basin_centroid_east,
+                                                                        basin_centroid_north))
+            # rectangle coordinates
+            info_region_basin = grass.read_command("g.region", vect=v_basin, flags='m')
+            dict_region_basin = dict(x.split('=', 1) for x in info_region_basin.split('\n') if '=' in x)
+            print('!Rectangle Containing %s basin CALCULATED!' % sub_bsn_name)
+
+            # directing vector
+            if coords_system == 'proj':
+                delta_x = abs(float(basin_centroid_east) - float(pour_point_coordinates['east']))
+                delta_y = abs(float(basin_centroid_north) - float(pour_point_coordinates['north']))
+                length_orienting_vector = math.sqrt((delta_x ** 2) + (delta_y ** 2)) / 1000
+                print('!Directing Vector of %s basin CALCULATED!' % sub_bsn_name)
+            else:
+                length_orienting_vector = f_geodesic_dist_wgs84(float(basin_centroid_north),
+                                                                float(pour_point_coordinates['north']),
+                                                                float(basin_centroid_east),
+                                                                float(pour_point_coordinates['east'])) / 1000
+                print('!Directing Vector of %s basin CALCULATED!' % sub_bsn_name)
+
+            # prevalent orientation
+            if coords_system == 'proj':
+                if delta_y != 0:
+                    prevalent_orientation = math.atan(abs(delta_x) / abs(delta_y))
+                    prevalent_orientation = prevalent_orientation * 180 / math.pi
+                    if delta_x >= 0 > delta_y:
+                        prevalent_orientation = 180 - prevalent_orientation
+                    elif delta_x < 0 and delta_y < 0:
+                        prevalent_orientation = 180 + prevalent_orientation
+                    elif delta_x < 0 <= delta_y:
+                        prevalent_orientation = 360 - prevalent_orientation
+                else:
+                    if delta_x >= 0:
+                        prevalent_orientation = 90
+                    else:
+                        prevalent_orientation = 270
+                print('!Prevalent Orientation of %s basin CALCULATED [%.2f degrees]!' % (sub_bsn_name,
+                                                                                         prevalent_orientation))
+            else:
+                prevalent_orientation = f_geodesic_bearing(float(basin_centroid_north),
+                                                           float(pour_point_coordinates['north']),
+                                                           float(basin_centroid_east),
+                                                           float(pour_point_coordinates['east']))
+                print('!Prevalent Orientation of %s basin CALCULATED [%.2f]!' % (sub_bsn_name,
+                                                                                 prevalent_orientation))
+
+            # compactness coefficient [AFDP]
+            compactness_coefficient = 0.28 * perimeter_basin / math.sqrt(area_basin)
+            print('!Compactness Coefficient of %s basin CALCULATED [%.2f]!' % (sub_bsn_name, compactness_coefficient))
+
+            # circularity ratio
+            circularity_ratio = (4 * math.pi * area_basin) / (perimeter_basin ** 2)
+            print('!Circularity Ratio of %s basin CALCULATED [%.2f]!' % (sub_bsn_name, circularity_ratio))
+
+            # main channel length and slope
+            sql_stat_hack = 'SELECT * FROM %s ' % v_basin_stream_network
+            hack_df = pd.read_sql_query(sql_stat_hack, con)
+            hack_order = hack_df['hack'].min()
+            expr = 'hack=%s' % hack_order
+            grass.run_command('v.extract', input=v_basin_stream_network, output=v_mainchannel_split, type='line',
+                              where=expr, overwrite=True, quiet=True)
+            grass.run_command("v.build.polylines", input=v_mainchannel_split, output=v_mainchannel, type='line',
+                              cats='first', overwrite=True, quiet=True)
+            grass.run_command('v.to.db', map=v_mainchannel, option='length', units='kilometers', columns='length',
+                              quiet=True)
+
+            sql_stat1 = 'SELECT * FROM %s ' % v_mainchannel_split
+            stream_network_df = pd.read_sql_query(sql_stat1, con)
+            stream_length = stream_network_df['length']
+            stream_slope = stream_network_df['gradient']
+            mainchannel_out_elevation = stream_network_df['outlet_elev']
+            mainchannel_source_elevation = stream_network_df['source_elev']
+            weighted_slope = stream_length * stream_slope / stream_length.sum()
+            mainchannel_length = stream_length.sum() / 1000     # kilometers
+            mainchannel_slope = weighted_slope.sum()            # m/m
+            mainchannel_max_elevation = mainchannel_source_elevation.max()
+            mainchannel_outlet_elevation = mainchannel_out_elevation.min()
+            print('!Mainchannel Length of %s basin CALCULATED [%.2f km]!' % (sub_bsn_name, mainchannel_length))
+            print('!Mainchannel Slope of %s basin CALCULATED [%.2f percent]!' % (sub_bsn_name, mainchannel_slope * 100))
+
+            # main channel mean slope (USGS: https://pubs.usgs.gov/sir/2006/5312/pdf/sir2006-5312.pdf)
+            # n_85 = 0
+            # n_10 = 0
+            # while stream_network_df['cum_length'][n_85] > 0.15 * mainchannel_length * 1000:
+            #     e_85 = stream_network_df['source_elev'][n_85]
+            #     l_85 = stream_network_df['cum_length'][n_85]
+            #     n_85 += 1
+            # while stream_network_df['cum_length'][n_10] > 0.90 * mainchannel_length * 1000:
+            #     e_10 = stream_network_df['source_elev'][n_10]
+            #     l_10 = stream_network_df['cum_length'][n_10]
+            #     n_10 += 1
+            # mainchannel_slope_usgs = (e_85 - e_10) / (l_10 - l_85)
+            mainchannel_slope_usgs = mainchannel_slope
+
+            print('!Mainchannel Length of %s basin CALCULATED [%.2fkm]!' % (sub_bsn_name, mainchannel_length))
+            print('!Mainchannel Slope of %s basin CALCULATED [%.2f m/m]!' % (sub_bsn_name, mainchannel_slope))
+            print('!Mainchannel Max Elevation of %s basin CALCULATED [%.2f msnm]!' % (sub_bsn_name,
+                                                                                      mainchannel_max_elevation))
+            print('!Mainchannel Outlet Elevation of %s basin CALCULATED [%.2f msnm]!' %
+                  (sub_bsn_name, mainchannel_outlet_elevation))
+
+            # main channel profile
+            mainchannel_profile = stream_network_df.plot(x='cum_length', y='outlet_elev', color="blue",
+                                                         label='Talweg')
+            mainchannel_profile.set_xlabel('Abscisa [m]')
+            mainchannel_profile.set_ylabel('Elevación [msnm]')
+            mainchannel_profile_plot = mainchannel_profile.get_figure()
+            mainchannel_profile_plot.savefig(out_dir + '/' + bsn_name + '/' + sub_bsn_name + '/' + 'profile.png')
+
+            # cumulative areas over basin
+            if coords_system == 'proj':
+                accumulation = stream_network_df['flow_accum'] * pixel_res ** 2 / 1000000   # square kilometers
+            elif coords_system == 'geo':    # [area equals pixel resolution (degrees) by earth radius power of 2]
+                accumulation = stream_network_df['flow_accum'] * (pixel_res * math.pi / 180 * 6371) ** 2
+
+            stream_network_df['flow_accum_km2'] = accumulation
+            stream_network_df['relative_flow_accum'] = stream_network_df['flow_accum_km2'] / accumulation.max()
+            stream_network_df['relative_elev'] = (stream_network_df['source_elev'] - mainchannel_outlet_elevation) \
+                / (mainchannel_max_elevation - mainchannel_outlet_elevation)
+
+            # hypsometric curve
+            mainchannel_hypsometric = stream_network_df.plot(x='relative_flow_accum', y='outlet_elev',
+                                                             color='brown', label='Curva hispométrica')
+            mainchannel_hypsometric.set_xlabel('Area relativa [-]')
+            mainchannel_hypsometric.set_ylabel('Elevación [msnm]')
+            mainchannel_hypsometric_plot = mainchannel_hypsometric.get_figure()
+            mainchannel_hypsometric_plot.savefig(out_dir + '/' + bsn_name + '/' + sub_bsn_name + '/' +
+                                                 'hypsometric.png')
+            plt.close(mainchannel_hypsometric_plot)
+
+            # hypsographic curve
+            mainchannel_hypsographic = stream_network_df.plot(x='relative_flow_accum', y='relative_elev',
+                                                              color='brown', label='Curva hipsográfica')
+            mainchannel_hypsographic.set_xlabel('Area relativa [-]')
+            mainchannel_hypsographic.set_ylabel('Elevación relativa')
+            mainchannel_hypsographic_plot = mainchannel_hypsographic.get_figure()
+            mainchannel_hypsographic_plot.savefig(out_dir + '/' + bsn_name + '/' + sub_bsn_name + '/' +
+                                                  'hypsographic.png')
+            plt.close(mainchannel_hypsographic_plot)
+
+            # export elevation, hypsometric and hypsographic profile
+            stream_network_df.to_csv(out_dir + '/' + bsn_name + '/' + sub_bsn_name + '/' + 'mainchannel_info.csv')
+            print('!Mainchannel Profile of %s basin EXPORTED!' % sub_bsn_name)
+            print('!Hypsometric and Hypsographic Curves of %s basin EXPORTED!' % sub_bsn_name)
+
+            # distance to centroid [AFDP]
+            grass.run_command('v.buffer', input=v_basin, output='buffered_basin', distance=0.001, overwrite=True,
+                              quiet=True)
+
+            grass.run_command('v.extract', input='buffered_basin', type='centroid', output='centroid', overwrite=True,
+                              quiet=True)
+
+            grass.run_command('v.type', input='centroid', output=v_centroid, from_type='centroid', to_type='point',
+                              overwrite=True, quiet=True)
+
+            grass.run_command('v.db.addtable', map=v_centroid, table=v_centroid, overwrite=True, quiet=True)
+
+            grass.run_command('v.db.addcolumn', map=v_centroid, columns='dist_mc int', overwrite=True, quiet=True)
+
+            grass.run_command('v.distance', from_=v_centroid, from_type='point', to=v_mainchannel, to_type='line',
+                              column='dist_mc', upload='dist', output='distance', overwrite=True, quiet=True)
+
+            grass.run_command('v.to.points', input='distance', output='distance_p', use='node', overwrite=True,
+                              quiet=True)
+
+            grass.run_command('v.to.db', map='distance_p', layer='2', option='cat', columns='cat')
+
+            grass.run_command('v.what.rast', map='distance_p', raster=r_basin_distance, layer='2', column='along',
+                              overwrite=True, quiet=True)
+
+            # distance to outlet from nearest point to center of gravity
+            dist_out2 = grass.read_command('v.db.select', flags='c', map='distance_p', layer='2', col='along',
+                                           overwrite=True, quiet=True)
+            dist_out2 = (dist_out2.split("\n"))
+            dist_out_centroid = float(dist_out2[1]) / 1000
+            print('!Distance to Centroid of %s basin CALCULATED [%.2fkm]!' % (sub_bsn_name, dist_out_centroid))
+
+            # topological diameter
+            # [https: // www.iihr.uiowa.edu / rmantilla / files / 2013 / 01 / GeomTopol_CALI.pdf]
+            topological_diameter = len(stream_network_df)
+            print('!Topology Diameter of %s basin CALCULATED [%.2f]!' % (sub_bsn_name, topological_diameter))
+
+            # basin characteristic altitudes
+            basin_elevation_info = grass.raster_info(r_basin_elevation)
+            basin_min_elevation = basin_elevation_info['min']
+            basin_max_elevation = basin_elevation_info['max']
+            basin_elevation_delta = basin_max_elevation - basin_min_elevation
+            print('!Characteristic Altitudes of %s basin CALCULATED!' % sub_bsn_name)
+
+            # basin max length [AFDP]
+            distance_info = grass.raster_info(r_basin_distance)
+            basin_max_length = distance_info['max'] / 1000      # km
+
+            # shape factor [AFDP]
+            shape_factor = area_basin / basin_max_length ** 2
+
+            # elongation Ratio [AFDP]
+            elongation_ratio = (2 * math.sqrt(area_basin / math.pi)) / basin_max_length
+
+            # mean hillslope length [AFDP]
+            hillslope_info = grass.read_command('r.univar', map=r_basin_hillslope_distance)
+            mean_hillslope_length = float(hillslope_info.split('\n')[9].split('=')[0].split(':')[1])
+
+            # stream network statistics
+            txt_horton = out_dir + '/' + bsn_name + '/' + sub_bsn_name + '/' + 'horton_stats.txt'
+
+            grass.run_command('g.region', raster=r_basin_strahler)
+
+            stream_stats = grass.read_command('r.stream.stats', stream_rast=r_basin_strahler,
+                                              direction=r_basin_drainage, elevation=r_basin_elevation)
+            text_horton_stats = open(txt_horton, "w")
+            text_horton_stats.write("%s" % stream_stats)
+            text_horton_stats.close()
+            stream_stats_summary = stream_stats.split('\n')[4].split('|')
+            stream_stats_mom = stream_stats.split('\n')[8].split('|')
+            max_order = stream_stats_summary[0]
+            num_streams = stream_stats_summary[1]
+            len_streams = stream_stats_summary[2]
+            stream_freq = stream_stats_summary[5]
+            bif_ratio = stream_stats_mom[0]
+            len_ratio = stream_stats_mom[1]
+            area_ratio = stream_stats_mom[2]
+            slope_ratio = stream_stats_mom[3]
+
+            # drainage density
+            drainage_density = float(len_streams) / float(area_basin)
+
+            # magnitude [Corrected]
+            line_id = 22 + 2 * int(max_order)     # line identifier
+            stream_stats_mag = stream_stats.split('\n')[line_id].split('|')
+            magnitude_o = stream_stats_mag[1]
+
+            # first order stream frequency [Corrected]
+            first_order_stream_frequency = int(magnitude_o) / area_basin
+
+            # Other index [AFDP]
+            mass_coefficient = float(mean_elev) / float(area_basin)
+            oro_coefficient = float((basin_elevation_delta / 1000) ** 2) / float(area_basin)
+            stab_coefficient = float(1) / float(drainage_density)
+            basin_width = float(area_basin) / float(basin_max_length)
+
+            # ======================================================================================================
+            # -- Populate morphometric parameters data frame
+            # ======================================================================================================
+            parameters_df[sub_bsn_name] = [basin_centroid_east,
+                                           basin_centroid_north,
+                                           float(dict_region_basin['n']),
+                                           float(dict_region_basin['w']),
+                                           float(dict_region_basin['s']),
+                                           float(dict_region_basin['e']),
+                                           area_basin,
+                                           perimeter_basin,
+                                           basin_max_length,
+                                           basin_width,
+                                           dist_out_centroid,
+                                           basin_max_elevation,
+                                           basin_min_elevation,
+                                           basin_elevation_delta,
+                                           mean_elev,
+                                           mean_slope,
+                                           length_orienting_vector,
+                                           prevalent_orientation,
+                                           mainchannel_length,
+                                           mainchannel_slope,
+                                           mainchannel_slope_usgs,
+                                           mainchannel_max_elevation,
+                                           mean_hillslope_length,
+                                           magnitude_o,
+                                           max_order,
+                                           num_streams,
+                                           len_streams,
+                                           first_order_stream_frequency,
+                                           drainage_density,
+                                           stream_freq,
+                                           bif_ratio,
+                                           len_ratio,
+                                           area_ratio,
+                                           slope_ratio,
+                                           compactness_coefficient,
+                                           circularity_ratio,
+                                           topological_diameter,
+                                           elongation_ratio,
+                                           shape_factor,
+                                           mass_coefficient,
+                                           oro_coefficient,
+                                           stab_coefficient,
+                                           asymmetry_coefficient]
+            print('!MORPHOMETRIC CHARACTERIZATION of %s basin DONE!' % sub_bsn_name)
+
+            # ==========================================================================================================
+            # -- Delete maps if flagged
+            # ==========================================================================================================
+            if delete_maps:
+                delete_maps = [r_mask, r_basin_slope, r_basin_stream, r_basin_strahler, r_basin_drainage,
+                               r_basin_distance, r_basin_elevation, r_basin_half_basin, r_basin_accumulation,
+                               r_basin_slope_average, r_basin_height_average, r_basin_hillslope_distance]
+                grass.run_command('g.remove', type='raster', name=delete_maps, flags='f')
+
+                deleted_vectors = [v_half_basin, v_mainchannel, v_centroid, v_mainchannel_split,
+                                   v_basin_stream_network]
+                grass.run_command('g.remove', type='vector', name=deleted_vectors, flags='f')
+
+        except TypeError:
+            print('!Morphometric Characterization of %s basin FAILED!' % sub_bsn_name)
+
+        # ==============================================================================================================
+        # -- Restore original region
+        # ==============================================================================================================
+        grass.read_command('g.region', flags='p', region='original')
+
+    # ==================================================================================================================
+    # -- Export morphometric parameters data frame
+    # ==================================================================================================================
+    parameters_df.to_csv(out_dir + '/' + 'Morphometric Characterization.csv')
+    print('BASIN %s PROCESSING TIME = %.2f minutes' % (sub_bsn_name, (time() - basin_processing_time)/60))
+    grass.run_command('g.remove', flags='f', type='region', name='original')
+    print('BASIN MORPHOMETRIC CHARACTERIZATION ENDED')
+
+
 def f_pointer(flow_direction):
     """Tells the cell where to flow.
 
@@ -1502,6 +2149,7 @@ def r_terrain_correction(dem_raster, hydro_corrected_dem, stream_network=None, c
     Hydrological corrected DEM [inside GRASS mapset]
 
     """
+    #TODO: Generalize into AquaGIS environment
     # preparations
     wbt = whitebox.WhiteboxTools()
     # call(['saga_cmd', 'ta_preprocessor', '3'])
@@ -1559,7 +2207,7 @@ def r_terrain_correction(dem_raster, hydro_corrected_dem, stream_network=None, c
     # import results to GRASS working environment
     if correction_method != 3:     # if not a GRASS method
         grass.run_command('r.in.gdal', input=temporal_raster, output=hydro_corrected_dem, overwrite=True,
-                          title=metadata)
+                          title=metadata, flags='o')
 
     # delete temporal folder
     shutil.rmtree(temporal_folder, ignore_errors=True)
@@ -1725,7 +2373,7 @@ def r_bsn_preprocess(raster_names_df, vector_names_df):
         start_time = time()
         grass.run_command("r.stream.distance", stream_rast=r_stream_network_thin_global, direction=r_drainage_global,
                           elevation=r_elevation_global, distance=r_hillslope_distance, overwrite=True, quiet=True)
-        print('!Distance to network maps calculated! - Process time = %.2f minutes' % ((time() - start_time) / 60))
+        print('!Distance to network maps CALCULATED! - Process time = %.2f minutes' % ((time() - start_time) / 60))
 
         # ==============================================================================================================
         # -- Identify outlet points
