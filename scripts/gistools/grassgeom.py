@@ -411,14 +411,15 @@ def f_bsn_morphometry(raster_names_df, vector_names_df, fields_names_df, out_dir
 
             # populate perimeter column
             grass.run_command('v.to.db', map=v_basin, option='perimeter', units='kilometers', columns='perimeter',
-                              quiet=True)
+                              quiet=True, overwrite=True)
             # read perimeter
             tmp = grass.read_command('v.to.db', map=v_basin, option='perimeter', units='kilometers',
                                      columns='perimeter', flags='p')
             perimeter_basin = float(tmp.split('\n')[1].split('|')[1])
 
             # populate area column
-            grass.run_command('v.to.db', map=v_basin, option='area', columns='area', units='kilometers', quiet=True)
+            grass.run_command('v.to.db', map=v_basin, option='area', columns='area', units='kilometers', quiet=True,
+                              overwrite=True)
 
             # read area
             tmp = grass.read_command('v.to.db', map=v_basin, option='area', units='kilometers', columns='area',
@@ -484,7 +485,7 @@ def f_bsn_morphometry(raster_names_df, vector_names_df, fields_names_df, out_dir
                                   overwrite=True, quiet=True)
                 grass.run_command('v.db.addcolumn', map=v_half_basin, columns='area double precision', quiet=True)
                 grass.run_command('v.to.db', map=v_half_basin, option='area', columns='area', units='kilometers',
-                                  quiet=True)
+                                  quiet=True, overwrite=True)
 
                 sql_stat2 = 'SELECT * FROM %s ' % v_half_basin
                 half_basin_df = pd.read_sql_query(sql_stat2, con)
@@ -601,7 +602,7 @@ def f_bsn_morphometry(raster_names_df, vector_names_df, fields_names_df, out_dir
                 grass.run_command("v.build.polylines", input=v_mainchannel_split, output=v_mainchannel, type='line',
                                   cats='first', overwrite=True, quiet=True)
                 grass.run_command('v.to.db', map=v_mainchannel, option='length', units='kilometers', columns='length',
-                                  quiet=True)
+                                  quiet=True, overwrite=True)
 
                 sql_stat1 = 'SELECT * FROM %s ' % v_mainchannel_split
                 stream_network_df = pd.read_sql_query(sql_stat1, con)
@@ -703,7 +704,7 @@ def f_bsn_morphometry(raster_names_df, vector_names_df, fields_names_df, out_dir
                 grass.run_command('v.to.points', input='distance', output='distance_p', use='node', overwrite=True,
                                   quiet=True)
 
-                grass.run_command('v.to.db', map='distance_p', layer='2', option='cat', columns='cat')
+                grass.run_command('v.to.db', map='distance_p', layer='2', option='cat', columns='cat', overwrite=True)
 
                 grass.run_command('v.what.rast', map='distance_p', raster=r_basin_distance, layer='2', column='along',
                                   overwrite=True, quiet=True)
@@ -831,10 +832,10 @@ def f_bsn_morphometry(raster_names_df, vector_names_df, fields_names_df, out_dir
                 # -- Delete maps if flagged
                 # ======================================================================================================
                 if delete_maps:
-                    delete_maps = [r_mask, r_basin_slope, r_basin_stream, r_basin_strahler, r_basin_drainage,
-                                   r_basin_distance, r_basin_elevation, r_basin_half_basin, r_basin_accumulation,
-                                   r_basin_slope_average, r_basin_height_average, r_basin_hillslope_distance]
-                    grass.run_command('g.remove', type='raster', name=delete_maps, flags='f')
+                    delete_maps_list = [r_mask, r_basin_slope, r_basin_stream, r_basin_strahler, r_basin_drainage,
+                                        r_basin_distance, r_basin_elevation, r_basin_half_basin, r_basin_accumulation,
+                                        r_basin_slope_average, r_basin_height_average, r_basin_hillslope_distance]
+                    grass.run_command('g.remove', type='raster', name=delete_maps_list, flags='f')
 
                     deleted_vectors = [v_half_basin, v_mainchannel, v_centroid, v_mainchannel_split,
                                        v_basin_stream_network]
@@ -2064,7 +2065,7 @@ def v_discharge_points(stream_network_r, flow_direction_r, discharges_r, dischar
     # add coordinates to discharges points
     grass.run_command('v.db.addcolumn', map=discharges_v, column='east double')
     grass.run_command('v.db.addcolumn', map=discharges_v, column='north double')
-    grass.run_command('v.to.db', map=discharges_v, option='coor', columns=['east', 'north'])
+    grass.run_command('v.to.db', map=discharges_v, option='coor', columns=['east', 'north'], overwrite=True)
 
     print('!Discharges points identification DONE [AFDP]!')
 
